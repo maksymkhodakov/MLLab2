@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -21,14 +20,14 @@ SPLIT_TEST = 0.2
 # Перевірка коректності часток
 assert abs(SPLIT_TRAIN + SPLIT_VAL + SPLIT_TEST - 1.0) < 1e-9
 
-# CV-спліттер: стратифікований, щоб у кожному фолді були всі класи
+# Стратифікований CV, щоб у кожному фолді були всі класи
 CV = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_SEED)
 
-# Для learning_curve: не беремо надто малі train_sizes, щоб у кожному фолді був кожен клас
-LEARN_SIZES = np.linspace(0.3, 1.0, 8)  # 30% ... 100%
+# Абсолютні train_sizes (ВАЖЛИВО: <= макс. навчального розміру у фолді = 150 * 4/5 = 120)
+LEARN_SIZES = np.array([60, 80, 100, 120], dtype=int)
 
-# Сітка C для validation_curve (регуляризація)
-C_RANGE = np.logspace(-3, 3, 7)  # 0.001 ... 1000
+# Сітка C для validation curve
+C_RANGE = np.logspace(-3, 3, 7)
 
 # ============================================================
 # ЕТАП 1: ЗАВАНТАЖЕННЯ ДАНИХ
@@ -38,7 +37,6 @@ data = pd.read_csv("Iris.csv")
 print("Розмірність датасету:", data.shape)
 print(data.head(3).to_string(index=False))
 
-# Видаляємо службову колонку Id (якщо є)
 if "Id" in data.columns:
     data = data.drop("Id", axis=1)
 print("Після видалення Id -> колонки:", list(data.columns))
@@ -49,13 +47,12 @@ print("Після видалення Id -> колонки:", list(data.columns))
 print("\nЕТАП 2: ФОРМУВАННЯ X та y")
 X = data.drop("Species", axis=1)
 y = data["Species"]
-
 le = LabelEncoder()
 y_encoded = le.fit_transform(y)
 print("Класи:", list(le.classes_))
 
 # ============================================================
-# ЕТАП 3: РОЗБИТТЯ ДАНИХ 60/20/20 (стратифіковано)
+# ЕТАП 3: РОЗБИТТЯ 60/20/20 (стратифіковано)
 # ============================================================
 print("\nЕТАП 3: РОЗБИТТЯ ДАНИХ (train/val/test = 60/20/20)")
 X_train, X_temp, y_train, y_temp = train_test_split(
@@ -70,33 +67,31 @@ print(f"Train: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape}")
 
 
 # ============================================================
-# ДОПОМІЖНІ: навчання, метрики, графіки, overfit-звіт
+# ДОПОМІЖНІ: звіти, графіки, перевірки
 # ============================================================
-def overfit_report(name, y_tr_true, y_tr_pred, y_va_true, y_va_pred):
-    """Звіт про overfitting/underfitting за F1-macro."""
+def overfit_report(name, y_tr_true, y_tr_pred, y_va_true, y_va_pred, gap_thr=0.05):
     f1_tr = f1_score(y_tr_true, y_tr_pred, average="macro")
     f1_va = f1_score(y_va_true, y_va_pred, average="macro")
     gap = f1_tr - f1_va
     print(f"[Overfit check] {name}: F1(train)={f1_tr:.3f}  F1(val)={f1_va:.3f}  GAP={gap:+.3f}")
-    if gap > 0.05:
-        print("  ⚠ Можливе перенавчання (train значно кращий за val).")
-    elif gap < -0.05:
-        print("  ⚠ Можливе недонавчання/нестабільність (val кращий за train).")
+    if gap > gap_thr:
+        print("  ⚠ Перенавчання: train помітно кращий за val.")
+    elif gap < -gap_thr:
+        print("  ⚠ Аномалія/нестабільність: val кращий за train.")
     else:
-        print("  ✅ Явного перенавчання/недонавчання не спостерігається.")
+        print("  ✅ Баланс train/val виглядає здорово.")
 
 
 def plot_learning_curve_for(pipe, X_all, y_all, title):
-    """Крива навчання із стратифікованим CV і без надто малих train_sizes."""
     print(f"Побудова Learning Curve: {title}")
     train_sizes, train_scores, val_scores = learning_curve(
         pipe, X_all, y_all, cv=CV, scoring="f1_macro",
-        train_sizes=LEARN_SIZES
+        train_sizes=LEARN_SIZES, n_jobs=None, error_score=np.nan
     )
     plt.figure(figsize=(8, 5))
-    plt.plot(train_sizes, train_scores.mean(axis=1), "o-", label="Train F1")
-    plt.plot(train_sizes, val_scores.mean(axis=1), "o-", label="Validation F1")
-    plt.xlabel("Кількість тренувальних зразків")
+    plt.plot(train_sizes, np.nanmean(train_scores, axis=1), "o-", label="Train F1")
+    plt.plot(train_sizes, np.nanmean(val_scores, axis=1), "o-", label="Validation F1")
+    plt.xlabel("Кількість тренувальних зразків (абс.)")
     plt.ylabel("F1 (macro)")
     plt.title(title)
     plt.legend()
@@ -105,26 +100,16 @@ def plot_learning_curve_for(pipe, X_all, y_all, title):
     plt.show()
 
 
-def plot_validation_curve_for(base_model, X_all, y_all, title, penalty):
-    """
-    Валідаційна крива по C для заданого penalty.
-    Використовуємо пайплайн (scale + logreg).
-    """
-    print(f"Побудова Validation Curve (C) для: {title}")
-    model = LogisticRegression(
-        penalty=penalty,
-        solver=("saga" if penalty == "l1" else "lbfgs"),
-        max_iter=(5000 if penalty == "l1" else 1000),
-        random_state=RANDOM_SEED
-    )
+def plot_validation_curve_for(model, X_all, y_all, title, penalty):
+    print(f"Побудова Validation Curve (C): {title}")
     pipe = Pipeline([("scaler", StandardScaler()), ("clf", model)])
     train_scores, val_scores = validation_curve(
         pipe, X_all, y_all, param_name="clf__C", param_range=C_RANGE,
-        cv=CV, scoring="f1_macro"
+        cv=CV, scoring="f1_macro", n_jobs=None, error_score=np.nan
     )
     plt.figure(figsize=(8, 5))
-    plt.semilogx(C_RANGE, train_scores.mean(axis=1), "o-", label="Train F1")
-    plt.semilogx(C_RANGE, val_scores.mean(axis=1), "o-", label="Validation F1")
+    plt.semilogx(C_RANGE, np.nanmean(train_scores, axis=1), "o-", label="Train F1")
+    plt.semilogx(C_RANGE, np.nanmean(val_scores, axis=1), "o-", label="Validation F1")
     plt.xlabel("C (менше => сильніша регуляризація)")
     plt.ylabel("F1 (macro)")
     plt.title(title)
@@ -135,18 +120,12 @@ def plot_validation_curve_for(base_model, X_all, y_all, title, penalty):
 
 
 def evaluate_model(model, name):
-    """
-    Повний цикл: навчання (pipeline), звіти на train/val/test,
-    confusion matrix, learning/validation curves, overfit-звіт.
-    """
     print(f"\n==================== {name} ====================")
     pipe = Pipeline([("scaler", StandardScaler()), ("clf", model)])
 
-    # Навчання
     print("Навчання моделі...")
     pipe.fit(X_train, y_train)
 
-    # Прогнози для звітів
     y_pred_train = pipe.predict(X_train)
     y_pred_val = pipe.predict(X_val)
     y_pred_test = pipe.predict(X_test)
@@ -158,21 +137,15 @@ def evaluate_model(model, name):
     print("--- ЗВІТ: TEST ---")
     print(classification_report(y_test, y_pred_test, target_names=le.classes_))
 
-    # Overfitting / underfitting check
     overfit_report(name, y_train, y_pred_train, y_val, y_pred_val)
 
-    # Confusion Matrix (Test)
     cm = confusion_matrix(y_test, y_pred_test)
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=le.classes_)
-    disp.plot(cmap="Blues")
+    ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=le.classes_).plot(cmap="Blues")
     plt.title(f"Confusion Matrix (Test) — {name}")
     plt.tight_layout()
     plt.show()
 
-    # Learning Curve
     plot_learning_curve_for(pipe, X, y_encoded, f"Learning Curve — {name}")
-
-    # Validation Curve (по C)
     penalty = model.get_params()["penalty"]
     plot_validation_curve_for(model, X, y_encoded, f"Validation Curve — {name}", penalty=penalty)
 
@@ -182,18 +155,14 @@ def evaluate_model(model, name):
 # ============================================================
 print("\nЕТАП 4: МОДЕЛІ (L2, L1)")
 
-# L2 (ridge-like): стабільний solver lbfgs
-logreg_l2 = LogisticRegression(
-    penalty="l2", solver="lbfgs", max_iter=1000, random_state=RANDOM_SEED
-)
+# L2 — стабільний lbfgs
+logreg_l2 = LogisticRegression(penalty="l2", solver="lbfgs", max_iter=1000, random_state=RANDOM_SEED)
 
-# L1 (lasso-like): потрібен saga; збільшимо max_iter для надійної збіжності
-logreg_l1 = LogisticRegression(
-    penalty="l1", solver="saga", max_iter=5000, random_state=RANDOM_SEED
-)
+# L1 — беремо liblinear (для маленьких датасетів сходиться швидко і стабільно)
+logreg_l1 = LogisticRegression(penalty="l1", solver="liblinear", max_iter=1000, random_state=RANDOM_SEED)
 
 # ============================================================
-# ЕТАП 5: ЗАПУСК ОЦІНКИ ДЛЯ КОЖНОЇ МОДЕЛІ
+# ЕТАП 5: ОЦІНКА КОЖНОЇ МОДЕЛІ
 # ============================================================
 evaluate_model(logreg_l2, "Logistic Regression — L2")
 evaluate_model(logreg_l1, "Logistic Regression — L1")
