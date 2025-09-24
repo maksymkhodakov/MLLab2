@@ -28,13 +28,6 @@ SPLIT_VAL = 0.20  # частка валідаційної
 SPLIT_TEST = 0.20  # частка тестової
 assert abs(SPLIT_TRAIN + SPLIT_VAL + SPLIT_TEST - 1.0) < 1e-9, "Частки сплітів мусять сумуватися до 1.0"
 
-# Стратифікований K-Fold: гарантує, що у кожному фолді є всі класи (баланс)
-CV = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_SEED)
-
-# Для learning_curve: беремо "абсолютні" розміри, достатньо великі для трьох класів
-# Iris має 150 зразків; у 5-fold максимум train у фолді ≈ 120 → не перевищуємо 120
-LEARN_SIZES = np.array([60, 80, 100, 120], dtype=int)
-
 # Для validation_curve: сітка значень C (лог-шкала від 0.001 до 1000)
 C_RANGE = np.logspace(-3, 3, 7)
 
@@ -61,10 +54,33 @@ print("\nЕТАП 2: ФОРМУВАННЯ X та y")
 X = data.drop("Species", axis=1)  # 4 числові ознаки: SepalLength, SepalWidth, PetalLength, PetalWidth
 y = data["Species"]  # мітки класів як рядки
 
+n_samples = len(X)
+CV = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_SEED)
+max_train_size = int(n_samples * (CV.n_splits - 1) / CV.n_splits)
+
+# Для learning_curve: беремо "абсолютні" розміри, достатньо великі для трьох класів
+LEARN_SIZES = np.linspace(0.5, 1.0, 4) * max_train_size
+LEARN_SIZES = LEARN_SIZES.astype(int)
+
+print("Автоматичні розміри підвибірки train:", LEARN_SIZES)
+
 # Перетворюємо рядкові мітки у числа (0/1/2) — так зручніше для моделей
 le = LabelEncoder()
 y_encoded = le.fit_transform(y)
 print("Класи (порядок кодування):", list(le.classes_))
+
+# кореляційна heatmap ознак
+plt.figure(figsize=(6, 5))
+sns.heatmap(pd.DataFrame(X, columns=X.columns).corr(), annot=True, cmap="coolwarm", fmt=".2f")
+plt.title("Кореляційна матриця ознак (Iris)")
+plt.tight_layout()
+plt.show()
+
+# (опційно) Pairplot — гарно видно роздільність класів у просторах 2D
+sns.pairplot(pd.concat([X.reset_index(drop=True), pd.Series(le.inverse_transform(y_encoded), name="Species")], axis=1),
+             hue="Species", diag_kind="hist")
+plt.suptitle("Pairplot ознак Iris (кольором — класи)", y=1.02)
+plt.show()
 
 # ============================================================
 # ЕТАП 3: РОЗБИТТЯ ДАНИХ 60/20/20 (СТРАТИФІКОВАНО)
